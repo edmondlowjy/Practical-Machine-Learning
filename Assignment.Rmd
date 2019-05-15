@@ -1,0 +1,125 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Edmond Low"
+date: "5/14/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = T)
+library(caret); library(doMC); library(e1071); library(Hmisc); library(rattle); library(pgmm); library(gbm); library(ada); library(klaR)
+registerDoMC(2)
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we will be using data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+The Training and Test data are available for download at the following links:
+
+- [Training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+- [Test](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+Our task in this project is to attempt to build a prediction model to classify each barbell lift into the 5 possible categories: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). This is stored as outcome variable *classe* in the dataset.
+
+## Reading the data
+
+We start off by reading the training data into our R environment.
+```{r Data Ingestion}
+train_data<- read.csv('/Users/edmondlowjy/datasciencecoursera/Practical-Machine-Learning/Week\ 4/Project/pml-training.csv',stringsAsFactors = FALSE); train_data<- train_data[,(-1)]
+dim(train_data)
+```
+
+We notice that there are a large number of predictors (158) in the dataset. A closer look at the data tells us that there are a significant number of predictors with a large proportion of non-meaningful values such as empty strings `''` or empty values `NA`. We try to quantify this for each variable.
+```{r Non-meaningful Predictors}
+var_df<- data.frame(var=names(train_data),NA_occ=rep(0,ncol(train_data)),stringsAsFactors = FALSE)
+total_rows<- nrow(train_data)
+for(i in 1:ncol(train_data)){
+  var_df[i,2]=(sum(train_data[,i] %in% c(NA,0,''))/total_rows)
+}
+hist(var_df$NA_occ,breaks=50)
+```
+
+From the histogram, we observe that close to 100 variables being >90% comprised of non-meaningful values. Additionally, we also omit variables that we expect to have no meaningful relation to the outcome *classe*, such as the participants' names and timestamp during which the exerise is performed. Here we also transform the outcome variable into a factor.
+```{r Omit Predictors}
+var_remain_manual<- var_df$var[(var_df$NA_occ<=0.95)] #exclude variables with largely empty or identical readings
+var_remain_manual<- var_remain_manual[-(1:6)] #exclude variables that seem to have no relation to exercise performance e.g. user_name
+train_data_small<- train_data[,var_remain_manual]
+train_data_small$classe<- as.factor(train_data_small$classe); train_data_small<- na.omit(train_data_small)
+str(train_data_small)
+```
+
+Finally in this section we split the Training data into a sub-training dataset `training` and a validation set `validation`.
+```{r Data Slicing}
+set.seed(123)
+intrain<- createDataPartition(train_data_small$classe,p=0.6,list=FALSE)
+training<- train_data_small[intrain,]
+validation<- train_data_small[-intrain,]
+nrow(training); nrow(validation)
+```
+
+## Training Algorithms
+
+We proceed to use the **caret** package to perform a number of machine learning algorithms on our `training` dataset. For each of the algorithm, we establish the accuracy of the model by cross-validating against our `validation` dataset.
+
+### Predicting with Trees
+
+```{r RPart}
+set.seed(234)
+modelRPart<- train(classe~.,method='rpart',data=training)
+fancyRpartPlot(modelRPart$finalModel)
+predictRPart<- predict(modelRPart,newdata=validation)
+sum(predictRPart==validation$classe)/nrow(validation)
+```
+
+We observe that a prediction model trained using this *rpart* tree approach provides an out-of-sample accuracy of around 50%.
+
+### Predicting with Model-based approach
+
+```{r LDA}
+set.seed(345)
+modelLDA<- train(classe~.,method='lda',data=training)
+predictLDA<- predict(modelLDA,newdata=validation)
+sum(predictLDA==validation$classe)/nrow(validation)
+```
+
+We observe that a model-based approach for this prediction problem gives us an out-of-sample accuracy of approximately 70%.
+
+### Predicting with Bootstrap Aggregating
+
+```{r treebag}
+set.seed(456)
+modelBAG<- train(classe~., method='treebag',data=training)
+predictBAG<- predict(modelBAG,newdata=validation)
+sum(predictBAG==validation$classe)/nrow(validation)
+table(pred=predictBAG,actual=validation$classe)
+```
+
+Finally with a prediction model built using bootstrap aggregating, we observe an astonishing out-of-sample accuracy >90%. Thus, we decide upon this prediction model `modelBAG` for use in predicting the outcome in the Test dataset.
+
+## Prediction on Test Dataset
+
+We first read the Test dataset into our R environment and compare its variables with the original (all variables included) Training dataset.
+
+```{r Test Data Ingestion}
+test_data<- read.csv('/Users/edmondlowjy/datasciencecoursera/Practical-Machine-Learning/Week\ 4/Project/pml-testing.csv',stringsAsFactors = FALSE); test_data<- test_data[,(-1)]
+setdiff(union(names(train_data),names(test_data)),intersect(names(train_data),names(test_data)))
+```
+
+We note that the outcome variable *classe* is missing from the Test dataset. Additionally there is an additional variable called *problem_id*. We will need to apply the same predictors removal step to the Test dataset as we have done for the training data.
+
+```{r Test Omit Predictors}
+test_data_small<- test_data[,(var_remain_manual[var_remain_manual!='classe'])]
+test_data_small<- na.omit(test_data_small)
+```
+
+With the reduced dimension in the Test dataset, we proceed to perform outcome prediction using the Bootstrap Aggregating prediction model `modelBAG` previously created.
+
+```{r Prediction}
+predictOUT<- predict(modelBAG,newdata=test_data_small)
+test_data$classe<- predictOUT
+data.frame(problem_id=test_data$problem_id,prediction=test_data$classe)
+table(test_data$classe)
+```
+
+The above results represents our final prediction outcomes on the Test dataset.
